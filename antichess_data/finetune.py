@@ -37,10 +37,20 @@ For multi-GPU/TPU usage:
 
 import copy
 import functools
+import logging as std_logging
 import os
 import re
 import sys
+import warnings
 from pathlib import Path
+
+# Suppress verbose logging BEFORE importing JAX/TF
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+os.environ["JAX_PLATFORMS"] = "cuda,cpu"  # Skip TPU probe
+os.environ["GRPC_VERBOSITY"] = "ERROR"
+warnings.filterwarnings("ignore", message=".*crcmod.*")
+warnings.filterwarnings("ignore", message=".*deprecated.*", category=DeprecationWarning)
+warnings.filterwarnings("ignore", message=".*experimental.*")
 
 from absl import app
 from absl import flags
@@ -54,6 +64,24 @@ import jax.random as jrandom
 import numpy as np
 import optax
 import wandb
+
+# Suppress verbose module loggers
+std_logging.getLogger("orbax").setLevel(std_logging.ERROR)
+std_logging.getLogger("jax").setLevel(std_logging.ERROR)
+std_logging.getLogger("grain").setLevel(std_logging.ERROR)
+std_logging.getLogger("tensorstore").setLevel(std_logging.ERROR)
+std_logging.getLogger("root").setLevel(std_logging.ERROR)
+
+
+def _suppress_verbose_loggers():
+    """Suppress noisy loggers after all imports."""
+    for name in list(std_logging.Logger.manager.loggerDict.keys()):
+        if any(x in name.lower() for x in [
+            "orbax", "checkpoint", "tensorstore", "atomicity",
+            "array_metadata", "pytree", "async_checkpointer",
+            "signaling", "composite", "standard_logger"
+        ]):
+            std_logging.getLogger(name).setLevel(std_logging.ERROR)
 
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -405,6 +433,9 @@ def finetune(
     Returns:
         Fine-tuned parameters.
     """
+    # Suppress verbose loggers
+    _suppress_verbose_loggers()
+
     logging.info("=" * 60)
     logging.info("ANTICHESS FINE-TUNING")
     logging.info("=" * 60)
@@ -555,7 +586,6 @@ def finetune(
     for step in range(latest_step, num_steps + 1):
         # Save checkpoint
         if step % ckpt_frequency == 0:
-            logging.info(f"Checkpointing step {step}")
             checkpoint_manager.save(
                 step=step,
                 items=dict(
@@ -565,6 +595,7 @@ def finetune(
                     data_iter=data_iter,
                 ),
             )
+            logging.info(f"Checkpoint saved: step {step}")
 
         # Get batch
         sequences, loss_mask = next(data_iter)
