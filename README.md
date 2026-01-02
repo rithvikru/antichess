@@ -62,7 +62,7 @@ We show that, although a remarkably good approximation of Stockfish’s search-b
 ├── Stockfish                       - Stockfish (needs to be installed)
 |
 ├── README.md
-└── requirements.txt                - Dependencies
+└── pyproject.toml                  - Dependencies
 ```
 
 
@@ -75,30 +75,31 @@ git clone https://github.com/google-deepmind/searchless_chess.git
 cd searchless_chess
 ```
 
-This repository requires Python 3.10.
-`pip install -r requirements.txt` will install all required dependencies.
-This is best done inside a [conda environment](https://www.anaconda.com/).
-To that end, install [Anaconda](https://www.anaconda.com/download#downloads).
-Then, create and activate the conda environment:
+This repository requires Python 3.10+ and uses [uv](https://docs.astral.sh/uv/) for dependency management.
+
+### Installing uv
+
+If you don't have uv installed, you can install it with:
 
 ```bash
-conda create --name searchless_chess python=3.10
-conda activate searchless_chess
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-Install `pip` and use it to install all the dependencies:
+### Setting up the environment
+
+Create a virtual environment and install dependencies:
 
 ```bash
-conda install pip
-pip install -r requirements.txt
+uv sync
 ```
 
-If you have a GPU available (highly recommended for fast training), then you can install JAX with CUDA support.
+If you have a GPU available (highly recommended for fast training), install with CUDA support:
 
 ```bash
-pip install --upgrade "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+uv sync --extra cuda
 ```
-Note that the jax version must correspond to the existing CUDA installation you wish to use (CUDA 12 in the example above).
+
+Note that the JAX CUDA version must correspond to your existing CUDA installation (CUDA 12 in the example above).
 Please see the [JAX documentation](https://github.com/jax-ml/jax#installation) for more details.
 
 ### Installing Stockfish
@@ -179,10 +180,10 @@ cd ..
 
 ## Usage
 
-Before running any code, make sure to activate the conda environment and set the `PYTHONPATH`:
+Before running any code, make sure to activate the virtual environment and set the `PYTHONPATH`:
 
 ```bash
-conda activate searchless_chess
+source .venv/bin/activate
 export PYTHONPATH=$(pwd)/..
 ```
 

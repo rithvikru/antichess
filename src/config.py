@@ -46,6 +46,9 @@ class DataConfig:
   # The number of records to read from the dataset (can be useful when, e.g.,
   # the dataset does not fit into memory).
   num_records: int | None = None
+  # Optional base directory containing the dataset splits.
+  # If None, defaults to ../data relative to the working directory.
+  data_dir: str | None = None
 
 
 @dataclasses.dataclass(kw_only=True)

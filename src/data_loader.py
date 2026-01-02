@@ -17,6 +17,8 @@
 
 import abc
 import os
+from pathlib import Path
+import re
 
 import grain.python as pygrain
 import jax
@@ -129,14 +131,37 @@ _TRANSFORMATION_BY_POLICY = {
 
 
 # Follows the base_constants.DataLoaderBuilder protocol.
+def _resolve_bag_path(split_dir: Path, policy: str) -> str:
+  """Resolves the bag path, supporting sharded datasets via @N syntax."""
+  expected = split_dir / f'{policy}_data.bag'
+  if expected.exists():
+    return str(expected)
+
+  shard_files = sorted(split_dir.glob(f'{policy}-*-of-*_data.bag'))
+  if shard_files:
+    match = re.match(
+        rf'{re.escape(policy)}-(\d+)-of-(\d+)_data\.bag$',
+        shard_files[0].name,
+    )
+    if match:
+      num_shards = int(match.group(2))
+      return str(split_dir / f'{policy}@{num_shards:05d}_data.bag')
+    return str(shard_files[0])
+
+  raise FileNotFoundError(
+      f'No {policy} .bag files found in {split_dir}.'
+  )
+
+
 def build_data_loader(config: config_lib.DataConfig) -> pygrain.DataLoader:
   """Returns a data loader for chess from the config."""
-  data_source = bagz.BagDataSource(
-      os.path.join(
-          os.getcwd(),
-          f'../data/{config.split}/{config.policy}_data.bag',
-      ),
-  )
+  if config.data_dir is None:
+    base_dir = Path(os.getcwd()) / '..' / 'data'
+  else:
+    base_dir = Path(config.data_dir)
+  split_dir = base_dir / config.split
+  bag_path = _resolve_bag_path(split_dir=split_dir, policy=config.policy)
+  data_source = bagz.BagDataSource(bag_path)
 
   if config.num_records is not None:
     num_records = config.num_records

@@ -22,3 +22,14 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+
+# Virtual environments
+.venv/
+
+# Large generated artifacts and downloads
+BayesElo/
+Stockfish/
+lc0/
+*.pb
+bayeselo.tar.bz2
+fairy-stockfish-largeboard_x86-64
