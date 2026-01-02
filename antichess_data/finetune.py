@@ -399,6 +399,12 @@ def finetune(
 
     # Initialize checkpoint manager
     os.makedirs(output_dir, exist_ok=True)
+
+    # Helper to unreplicate params for checkpointing (avoids sharding issues)
+    def unreplicate_for_ckpt(x):
+        """Convert sharded arrays to single-device for checkpointing."""
+        return jax.tree.map(lambda arr: jax.device_get(arr), x)
+
     checkpoint_manager = training_utils.get_checkpoint_manager(
         ckpt_frequency=ckpt_frequency,
         max_to_keep=2,
@@ -411,17 +417,21 @@ def finetune(
     if checkpoint_manager.latest_step() is not None:
         latest_step = checkpoint_manager.latest_step()
         logging.info(f"Resuming from fine-tuning checkpoint {latest_step}")
-        params, params_ema, opt_state, data_iter = (
-            training_utils.restore_checkpoint(
-                checkpoint_manager=checkpoint_manager,
-                step=latest_step,
-                params=params,
-                params_ema=params_ema,
-                opt_state=opt_state,
+        # Restore unreplicated checkpoint
+        restored = checkpoint_manager.restore(
+            step=latest_step,
+            items=dict(
+                params=jax.device_get(params),
+                params_ema=jax.device_get(params_ema),
+                opt_state=jax.device_get(opt_state),
                 data_iter=data_iter,
-                sharding=sharding,
-            )
+            ),
         )
+        # Re-replicate across devices
+        params = training_utils.replicate(restored['params'], sharding)
+        params_ema = training_utils.replicate(restored['params_ema'], sharding)
+        opt_state = training_utils.replicate(restored['opt_state'], sharding)
+        data_iter = restored['data_iter']
 
     logging.info("=" * 60)
     logging.info("Starting fine-tuning loop")
@@ -439,9 +449,9 @@ def finetune(
             checkpoint_manager.save(
                 step=step,
                 items=dict(
-                    params=params,
-                    params_ema=params_ema,
-                    opt_state=opt_state,
+                    params=unreplicate_for_ckpt(params),
+                    params_ema=unreplicate_for_ckpt(params_ema),
+                    opt_state=unreplicate_for_ckpt(opt_state),
                     data_iter=data_iter,
                 ),
             )
@@ -472,9 +482,9 @@ def finetune(
     checkpoint_manager.save(
         step=num_steps,
         items=dict(
-            params=params,
-            params_ema=params_ema,
-            opt_state=opt_state,
+            params=unreplicate_for_ckpt(params),
+            params_ema=unreplicate_for_ckpt(params_ema),
+            opt_state=unreplicate_for_ckpt(opt_state),
             data_iter=data_iter,
         ),
     )
