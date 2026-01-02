@@ -33,3 +33,4 @@ lc0/
 *.pb
 bayeselo.tar.bz2
 fairy-stockfish-largeboard_x86-64
+*.jsonl

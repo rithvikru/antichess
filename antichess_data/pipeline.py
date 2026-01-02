@@ -8,7 +8,6 @@ import logging
 import multiprocessing as mp
 import os
 import sys
-import tempfile
 from functools import partial
 from pathlib import Path
 
@@ -20,7 +19,7 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from antichess_data.annotate import FairyStockfishAnnotator
-from antichess_data.load_games import load_and_filter_games, load_filtered_games
+from antichess_data.load_games import download_and_filter_games
 from antichess_data.parse_games import parse_antichess_movetext
 from antichess_data.utils import MIN_ELO_DEFAULT, MAX_GAMES_DEFAULT, TIME_LIMIT_MS_DEFAULT
 from antichess_data.write_bags import convert_parquet_to_bag
@@ -120,7 +119,7 @@ def process_game_chunk(
     return results
 
 
-    def run_pipeline(
+def run_pipeline(
     output_dir: str | Path,
     engine_path: str,
     min_elo: int = MIN_ELO_DEFAULT,
@@ -133,13 +132,9 @@ def process_game_chunk(
     skip_annotation: bool = False,
     train_split: float = 0.95,
     shard_size: int = 500_000,
-    pgn_path: str | Path | None = None,
-    pgn_url: str | None = None,
-    lichess_month: str | None = None,
-    lichess_months: list[str] | None = None,
-    lichess_base_url: str | None = None,
-    auto_backfill: bool = False,
-    max_backfill_months: int = 120,
+    start_year: int | None = None,
+    end_year: int | None = None,
+    cache_dir: str | Path | None = None,
 ):
     """Run the full antichess data generation pipeline.
 
@@ -156,13 +151,9 @@ def process_game_chunk(
         skip_annotation: Skip annotation (use existing annotated data).
         train_split: Train/test split ratio.
         shard_size: Records per .bag shard.
-        pgn_path: Local PGN or PGN.BZ2 path (optional).
-        pgn_url: Direct URL to a Lichess PGN.BZ2 file (optional).
-        lichess_month: Month for Lichess dump (YYYY-MM).
-        lichess_months: Explicit list of months to fetch.
-        lichess_base_url: Base URL for Lichess antichess database.
-        auto_backfill: Fetch previous months until max_games reached.
-        max_backfill_months: Max months to scan when auto_backfill is enabled.
+        start_year: First year to download from Lichess.
+        end_year: Last year to download from Lichess.
+        cache_dir: Directory to cache downloaded .pgn.zst files.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -170,27 +161,20 @@ def process_game_chunk(
     games_path = output_dir / "filtered_games.parquet"
     annotated_path = output_dir / f"annotated_{policy}.parquet"
 
-    # Step 1: Download and filter games
+    # Step 1: Download and filter games from Lichess
     if not skip_download:
         logger.info("=" * 60)
         logger.info("STEP 1: Downloading and filtering games from Lichess")
         logger.info("=" * 60)
 
-        load_kwargs = dict(
+        download_and_filter_games(
             output_path=games_path,
             min_elo=min_elo,
             max_games=max_games,
-            pgn_path=pgn_path,
-            pgn_url=pgn_url,
-            lichess_month=lichess_month,
-            lichess_months=lichess_months,
+            start_year=start_year,
+            end_year=end_year,
+            cache_dir=cache_dir,
         )
-        if lichess_base_url is not None:
-            load_kwargs["lichess_base_url"] = lichess_base_url
-        if auto_backfill:
-            load_kwargs["auto_backfill"] = auto_backfill
-            load_kwargs["max_backfill_months"] = max_backfill_months
-        load_and_filter_games(**load_kwargs)
     else:
         logger.info("Skipping download, using existing games file")
         if not games_path.exists():
@@ -288,7 +272,7 @@ def main():
     parser.add_argument(
         "--engine-path",
         type=str,
-        required=True,
+        default="fairy-stockfish-largeboard_x86-64",
         help="Path to Fairy-Stockfish binary",
     )
     parser.add_argument(
@@ -319,7 +303,7 @@ def main():
     parser.add_argument(
         "--num-workers",
         type=int,
-        default=1,
+        default=4,
         help="Number of parallel workers (each spawns own engine)",
     )
     parser.add_argument(
@@ -351,45 +335,22 @@ def main():
         help="Records per .bag shard for action_value",
     )
     parser.add_argument(
-        "--pgn-path",
-        type=str,
-        default=None,
-        help="Path to local PGN or PGN.BZ2 file",
-    )
-    parser.add_argument(
-        "--pgn-url",
-        type=str,
-        default=None,
-        help="Direct URL to a Lichess PGN.BZ2 file",
-    )
-    parser.add_argument(
-        "--lichess-month",
-        type=str,
-        default=None,
-        help="Month for Lichess dump (YYYY-MM, default: current UTC month)",
-    )
-    parser.add_argument(
-        "--lichess-months",
-        type=str,
-        default=None,
-        help="Comma-separated list of months (YYYY-MM) to fetch",
-    )
-    parser.add_argument(
-        "--lichess-base-url",
-        type=str,
-        default=None,
-        help="Base URL for Lichess antichess database",
-    )
-    parser.add_argument(
-        "--auto-backfill",
-        action="store_true",
-        help="Fetch previous months until max-games is reached",
-    )
-    parser.add_argument(
-        "--max-backfill-months",
+        "--start-year",
         type=int,
-        default=120,
-        help="Max months to scan when auto-backfill is enabled",
+        default=2023,
+        help="First year to download from Lichess",
+    )
+    parser.add_argument(
+        "--end-year",
+        type=int,
+        default=2024,
+        help="Last year to download from Lichess",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=str,
+        default="data/lichess_cache",
+        help="Directory to cache downloaded .pgn.zst files",
     )
 
     args = parser.parse_args()
@@ -411,17 +372,9 @@ def main():
         skip_annotation=args.skip_annotation,
         train_split=args.train_split,
         shard_size=args.shard_size,
-        pgn_path=args.pgn_path,
-        pgn_url=args.pgn_url,
-        lichess_month=args.lichess_month,
-        lichess_months=(
-            [m.strip() for m in args.lichess_months.split(",") if m.strip()]
-            if args.lichess_months
-            else None
-        ),
-        lichess_base_url=args.lichess_base_url,
-        auto_backfill=args.auto_backfill,
-        max_backfill_months=args.max_backfill_months,
+        start_year=args.start_year,
+        end_year=args.end_year,
+        cache_dir=args.cache_dir,
     )
 
 
