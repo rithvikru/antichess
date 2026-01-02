@@ -230,12 +230,14 @@ def build_antichess_data_loader(
     )
 
     # Use the action_value transformation from the original repo
-    from src.data_loader import ConvertActionValueDataToSequence
+    from src.data_loader import ConvertActionValueDataToSequence, FilterInvalidMoves
 
-    transformations = (
+    transformations = [
+        # Filter out king promotions (antichess-specific moves not in action vocab)
+        FilterInvalidMoves(policy),
         ConvertActionValueDataToSequence(num_return_buckets=num_return_buckets),
         pygrain.Batch(batch_size, drop_remainder=True),
-    )
+    ]
 
     return pygrain.DataLoader(
         data_source=data_source,
