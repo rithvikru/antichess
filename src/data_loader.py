@@ -39,6 +39,15 @@ def _process_move(move: str) -> np.ndarray:
   return np.asarray([utils.MOVE_TO_ACTION[move]], dtype=np.int32)
 
 
+def _is_valid_move(move: str) -> bool:
+  """Check if move is in the standard action vocabulary.
+
+  Antichess allows king promotions (e.g., 'f2f1k') which aren't in
+  the standard chess action vocabulary. This filters them out.
+  """
+  return move in utils.MOVE_TO_ACTION
+
+
 def _process_win_prob(
     win_prob: float,
     return_buckets_edges: np.ndarray,
@@ -123,6 +132,32 @@ class ConvertActionValueDataToSequence(ConvertToSequence):
     return sequence, self._loss_mask
 
 
+class FilterInvalidMoves(pygrain.FilterTransform):
+  """Filters out records with moves not in the action vocabulary.
+
+  Antichess allows king promotions (e.g., 'f2f1k') which aren't in
+  the standard chess action vocabulary. This skips such records.
+  """
+
+  def __init__(self, policy: str) -> None:
+    super().__init__()
+    self._policy = policy
+
+  def filter(self, element: bytes) -> bool:
+    try:
+      if self._policy == 'action_value':
+        _, move, _ = constants.CODERS['action_value'].decode(element)
+        return _is_valid_move(move)
+      elif self._policy == 'behavioral_cloning':
+        _, move = constants.CODERS['behavioral_cloning'].decode(element)
+        return _is_valid_move(move)
+      else:
+        # state_value has no moves, always valid
+        return True
+    except Exception:
+      return False
+
+
 _TRANSFORMATION_BY_POLICY = {
     'behavioral_cloning': ConvertBehavioralCloningDataToSequence,
     'action_value': ConvertActionValueDataToSequence,
@@ -180,12 +215,14 @@ def build_data_loader(config: config_lib.DataConfig) -> pygrain.DataLoader:
       num_epochs=None,
       seed=config.seed,
   )
-  transformations = (
+  transformations = [
+      # Filter out records with invalid moves (e.g., king promotions in antichess)
+      FilterInvalidMoves(config.policy),
       _TRANSFORMATION_BY_POLICY[config.policy](
           num_return_buckets=config.num_return_buckets
       ),
       pygrain.Batch(config.batch_size, drop_remainder=True),
-  )
+  ]
   return pygrain.DataLoader(
       data_source=data_source,
       sampler=sampler,
