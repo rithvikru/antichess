@@ -53,6 +53,7 @@ import jax.numpy as jnp
 import jax.random as jrandom
 import numpy as np
 import optax
+import wandb
 
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -147,6 +148,26 @@ flags.DEFINE_integer(
     "worker_count",
     0,
     "Number of data loading workers",
+)
+flags.DEFINE_bool(
+    "use_wandb",
+    True,
+    "Enable Weights & Biases logging",
+)
+flags.DEFINE_string(
+    "wandb_project",
+    "antichess-finetune",
+    "Weights & Biases project name",
+)
+flags.DEFINE_string(
+    "wandb_entity",
+    None,
+    "Weights & Biases entity (team or username)",
+)
+flags.DEFINE_string(
+    "wandb_run_name",
+    None,
+    "Weights & Biases run name (auto-generated if not provided)",
 )
 
 
@@ -335,6 +356,7 @@ def load_pretrained_params(
 
 def finetune(
     predictor_config: transformer.TransformerConfig,
+    model_size: str,
     data_dir: str,
     checkpoint_dir: str,
     output_dir: str,
@@ -350,11 +372,16 @@ def finetune(
     use_ema_params: bool,
     seed: int,
     worker_count: int,
+    use_wandb: bool,
+    wandb_project: str,
+    wandb_entity: str | None,
+    wandb_run_name: str | None,
 ) -> hk.Params:
     """Fine-tune a pretrained chess model on antichess data.
 
     Args:
         predictor_config: Transformer configuration.
+        model_size: Model size string (9M, 136M, 270M).
         data_dir: Directory with antichess .bag files.
         checkpoint_dir: Directory with pretrained checkpoint.
         output_dir: Directory to save fine-tuned checkpoints.
@@ -370,6 +397,10 @@ def finetune(
         use_ema_params: Load EMA params from pretrained.
         seed: Random seed.
         worker_count: Data loading workers.
+        use_wandb: Enable Weights & Biases logging.
+        wandb_project: W&B project name.
+        wandb_entity: W&B entity (team or username).
+        wandb_run_name: W&B run name.
 
     Returns:
         Fine-tuned parameters.
@@ -385,6 +416,32 @@ def finetune(
     logging.info(f"Process count: {jax.process_count()}")
     logging.info(f"Local device count: {jax.local_device_count()}")
     logging.info("=" * 60)
+
+    # Initialize Weights & Biases
+    if use_wandb:
+        run_name = wandb_run_name or f"antichess-{model_size}-lr{learning_rate}"
+        wandb_config = {
+            "model_size": model_size,
+            "num_layers": predictor_config.num_layers,
+            "embedding_dim": predictor_config.embedding_dim,
+            "num_heads": predictor_config.num_heads,
+            "learning_rate": learning_rate,
+            "batch_size": batch_size,
+            "num_steps": num_steps,
+            "max_grad_norm": max_grad_norm,
+            "num_return_buckets": num_return_buckets,
+            "seed": seed,
+            "checkpoint_dir": checkpoint_dir,
+            "output_dir": output_dir,
+        }
+        wandb.init(
+            project=wandb_project,
+            entity=wandb_entity,
+            name=run_name,
+            config=wandb_config,
+            resume="allow",
+        )
+        logging.info(f"W&B run initialized: {wandb.run.name}")
 
     if num_return_buckets != 128:
         raise ValueError(
@@ -525,10 +582,18 @@ def finetune(
 
         # Log
         if step % log_frequency == 0:
+            loss_val = float(jax.device_get(loss))
+            grad_norm_val = float(jax.device_get(grad_norm))
             logging.info(
-                f"step: {step:6d} | loss: {jax.device_get(loss):.4f} | "
-                f"grad_norm: {jax.device_get(grad_norm):.4f}"
+                f"step: {step:6d} | loss: {loss_val:.4f} | "
+                f"grad_norm: {grad_norm_val:.4f}"
             )
+            if use_wandb:
+                wandb.log({
+                    "train/loss": loss_val,
+                    "train/grad_norm": grad_norm_val,
+                    "train/step": step,
+                }, step=step)
 
     # Final checkpoint
     logging.info(f"Saving final checkpoint at step {num_steps}")
@@ -547,6 +612,10 @@ def finetune(
     logging.info("FINE-TUNING COMPLETE")
     logging.info(f"Checkpoints saved to: {output_dir}")
     logging.info("=" * 60)
+
+    # Finish W&B run
+    if use_wandb:
+        wandb.finish()
 
     return jax.device_get(params)
 
@@ -594,6 +663,7 @@ def main(_):
     # Run fine-tuning
     finetune(
         predictor_config=predictor_config,
+        model_size=model_size,
         data_dir=data_dir,
         checkpoint_dir=checkpoint_dir,
         output_dir=output_dir,
@@ -609,6 +679,10 @@ def main(_):
         use_ema_params=FLAGS.use_ema_params,
         seed=FLAGS.seed,
         worker_count=FLAGS.worker_count,
+        use_wandb=FLAGS.use_wandb,
+        wandb_project=FLAGS.wandb_project,
+        wandb_entity=FLAGS.wandb_entity,
+        wandb_run_name=FLAGS.wandb_run_name,
     )
 
 
