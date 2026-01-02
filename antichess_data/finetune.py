@@ -1,24 +1,38 @@
 # Copyright 2024
 # Licensed under the Apache License, Version 2.0
 
-"""Fine-tune the 270M chess transformer on antichess data.
+"""Fine-tune the chess transformer on antichess data.
 
-This script loads the pretrained 270M checkpoint and fine-tunes it on
-antichess action-value data using the same supervised setup as the original
-paper (cross-entropy on binned action-values with 128 buckets).
+This script loads a pretrained checkpoint (9M, 136M, or 270M) and fine-tunes
+it on antichess action-value data using the same supervised setup as the
+original paper (cross-entropy on binned action-values with 128 buckets).
 
 Usage:
+    # Fine-tune 270M model (default)
     python -m antichess_data.finetune \
-        --data-dir data/antichess \
-        --checkpoint-dir checkpoints/270M \
-        --output-dir checkpoints/antichess \
-        --num-steps 100000 \
-        --learning-rate 1e-5 \
-        --batch-size 256
+        --model_size 270M \
+        --num_steps 100000
 
-For TPU usage:
-    The script automatically detects and uses all available TPU cores.
-    JAX will handle distribution across the TPU pod.
+    # Fine-tune 9M model
+    python -m antichess_data.finetune \
+        --model_size 9M \
+        --num_steps 100000
+
+    # Fine-tune 136M model with custom paths
+    python -m antichess_data.finetune \
+        --model_size 136M \
+        --checkpoint_dir checkpoints/136M \
+        --output_dir checkpoints/antichess_136M \
+        --num_steps 100000
+
+Model configurations:
+    9M:   num_layers=8,  embedding_dim=256,  num_heads=8
+    136M: num_layers=8,  embedding_dim=1024, num_heads=8
+    270M: num_layers=16, embedding_dim=1024, num_heads=8
+
+For multi-GPU/TPU usage:
+    The script automatically detects and uses all available devices.
+    JAX will handle distribution across the device mesh.
 """
 
 import copy
@@ -55,19 +69,24 @@ from src import utils
 FLAGS = flags.FLAGS
 
 flags.DEFINE_string(
+    "model_size",
+    "270M",
+    "Model size to fine-tune: 9M, 136M, or 270M",
+)
+flags.DEFINE_string(
     "data_dir",
     "data/antichess",
     "Directory containing antichess train/test .bag files",
 )
 flags.DEFINE_string(
     "checkpoint_dir",
-    "checkpoints/270M",
-    "Directory containing pretrained 270M checkpoint",
+    None,
+    "Directory containing pretrained checkpoint (default: checkpoints/{model_size})",
 )
 flags.DEFINE_string(
     "output_dir",
-    "checkpoints/antichess",
-    "Directory to save fine-tuned checkpoints",
+    None,
+    "Directory to save fine-tuned checkpoints (default: checkpoints/antichess_{model_size})",
 )
 flags.DEFINE_integer(
     "checkpoint_step",
@@ -131,20 +150,49 @@ flags.DEFINE_integer(
 )
 
 
-def get_270m_config(num_return_buckets: int = 128) -> transformer.TransformerConfig:
-    """Returns the 270M model configuration."""
+# Model configurations for each size
+# From src/engines/constants.py
+MODEL_CONFIGS = {
+    "9M": {"num_layers": 8, "embedding_dim": 256, "num_heads": 8},
+    "136M": {"num_layers": 8, "embedding_dim": 1024, "num_heads": 8},
+    "270M": {"num_layers": 16, "embedding_dim": 1024, "num_heads": 8},
+}
+
+
+def get_model_config(
+    model_size: str,
+    num_return_buckets: int = 128,
+    seed: int = 42,
+) -> transformer.TransformerConfig:
+    """Returns the model configuration for the specified size.
+
+    Args:
+        model_size: One of "9M", "136M", or "270M".
+        num_return_buckets: Number of return buckets (128 for pretrained).
+        seed: Random seed for initialization.
+
+    Returns:
+        TransformerConfig for the specified model size.
+    """
+    if model_size not in MODEL_CONFIGS:
+        raise ValueError(
+            f"Unknown model_size: {model_size}. "
+            f"Must be one of: {list(MODEL_CONFIGS.keys())}"
+        )
+
+    config = MODEL_CONFIGS[model_size]
     return transformer.TransformerConfig(
         vocab_size=utils.NUM_ACTIONS,
         output_size=num_return_buckets,  # num_return_buckets for action_value
         pos_encodings=transformer.PositionalEncodings.LEARNED,
         max_sequence_length=tokenizer.SEQUENCE_LENGTH + 2,  # 79
-        num_heads=8,
-        num_layers=16,
-        embedding_dim=1024,
+        num_heads=config["num_heads"],
+        num_layers=config["num_layers"],
+        embedding_dim=config["embedding_dim"],
         apply_post_ln=True,
         apply_qk_layernorm=False,
         use_causal_mask=False,
-        seed=FLAGS.seed,
+        seed=seed,
     )
 
 
@@ -303,12 +351,12 @@ def finetune(
     seed: int,
     worker_count: int,
 ) -> hk.Params:
-    """Fine-tune the 270M model on antichess data.
+    """Fine-tune a pretrained chess model on antichess data.
 
     Args:
         predictor_config: Transformer configuration.
         data_dir: Directory with antichess .bag files.
-        checkpoint_dir: Directory with pretrained 270M checkpoint.
+        checkpoint_dir: Directory with pretrained checkpoint.
         output_dir: Directory to save fine-tuned checkpoints.
         checkpoint_step: Step of pretrained checkpoint to load.
         learning_rate: Learning rate for fine-tuning.
@@ -329,6 +377,9 @@ def finetune(
     logging.info("=" * 60)
     logging.info("ANTICHESS FINE-TUNING")
     logging.info("=" * 60)
+    logging.info(f"Model config: layers={predictor_config.num_layers}, "
+                 f"dim={predictor_config.embedding_dim}, "
+                 f"heads={predictor_config.num_heads}")
     logging.info(f"JAX devices: {jax.devices()}")
     logging.info(f"Device count: {jax.device_count()}")
     logging.info(f"Process count: {jax.process_count()}")
@@ -337,7 +388,7 @@ def finetune(
 
     if num_return_buckets != 128:
         raise ValueError(
-            "The pretrained 270M checkpoint expects num_return_buckets=128."
+            "The pretrained checkpoints expect num_return_buckets=128."
         )
     if batch_size % jax.device_count() != 0:
         raise ValueError(
@@ -502,10 +553,30 @@ def finetune(
 
 def main(_):
     """Main entry point."""
-    # Resolve paths
+    # Validate model size
+    model_size = FLAGS.model_size
+    if model_size not in MODEL_CONFIGS:
+        raise ValueError(
+            f"Unknown model_size: {model_size}. "
+            f"Must be one of: {list(MODEL_CONFIGS.keys())}"
+        )
+
+    # Resolve paths with defaults based on model size
     data_dir = os.path.join(os.getcwd(), FLAGS.data_dir)
-    checkpoint_dir = os.path.join(os.getcwd(), FLAGS.checkpoint_dir)
-    output_dir = os.path.join(os.getcwd(), FLAGS.output_dir)
+
+    if FLAGS.checkpoint_dir is not None:
+        checkpoint_dir = os.path.join(os.getcwd(), FLAGS.checkpoint_dir)
+    else:
+        checkpoint_dir = os.path.join(os.getcwd(), f"checkpoints/{model_size}")
+
+    if FLAGS.output_dir is not None:
+        output_dir = os.path.join(os.getcwd(), FLAGS.output_dir)
+    else:
+        output_dir = os.path.join(os.getcwd(), f"checkpoints/antichess_{model_size}")
+
+    logging.info(f"Model size: {model_size}")
+    logging.info(f"Checkpoint dir: {checkpoint_dir}")
+    logging.info(f"Output dir: {output_dir}")
 
     # Validate paths
     if not os.path.isdir(data_dir):
@@ -513,8 +584,12 @@ def main(_):
     if not os.path.isdir(checkpoint_dir):
         raise FileNotFoundError(f"Checkpoint directory not found: {checkpoint_dir}")
 
-    # Get model config
-    predictor_config = get_270m_config(num_return_buckets=FLAGS.num_return_buckets)
+    # Get model config for the specified size
+    predictor_config = get_model_config(
+        model_size=model_size,
+        num_return_buckets=FLAGS.num_return_buckets,
+        seed=FLAGS.seed,
+    )
 
     # Run fine-tuning
     finetune(
