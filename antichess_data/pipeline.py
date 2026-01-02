@@ -120,7 +120,7 @@ def process_game_chunk(
     return results
 
 
-def run_pipeline(
+    def run_pipeline(
     output_dir: str | Path,
     engine_path: str,
     min_elo: int = MIN_ELO_DEFAULT,
@@ -133,6 +133,13 @@ def run_pipeline(
     skip_annotation: bool = False,
     train_split: float = 0.95,
     shard_size: int = 500_000,
+    pgn_path: str | Path | None = None,
+    pgn_url: str | None = None,
+    lichess_month: str | None = None,
+    lichess_months: list[str] | None = None,
+    lichess_base_url: str | None = None,
+    auto_backfill: bool = False,
+    max_backfill_months: int = 120,
 ):
     """Run the full antichess data generation pipeline.
 
@@ -145,10 +152,17 @@ def run_pipeline(
         policy: Data policy type.
         num_workers: Number of parallel workers.
         chunk_size: Games per worker chunk.
-        skip_download: Skip HuggingFace download (use existing).
+        skip_download: Skip Lichess download (use existing).
         skip_annotation: Skip annotation (use existing annotated data).
         train_split: Train/test split ratio.
         shard_size: Records per .bag shard.
+        pgn_path: Local PGN or PGN.BZ2 path (optional).
+        pgn_url: Direct URL to a Lichess PGN.BZ2 file (optional).
+        lichess_month: Month for Lichess dump (YYYY-MM).
+        lichess_months: Explicit list of months to fetch.
+        lichess_base_url: Base URL for Lichess antichess database.
+        auto_backfill: Fetch previous months until max_games reached.
+        max_backfill_months: Max months to scan when auto_backfill is enabled.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -159,14 +173,24 @@ def run_pipeline(
     # Step 1: Download and filter games
     if not skip_download:
         logger.info("=" * 60)
-        logger.info("STEP 1: Downloading and filtering games from HuggingFace")
+        logger.info("STEP 1: Downloading and filtering games from Lichess")
         logger.info("=" * 60)
 
-        load_and_filter_games(
+        load_kwargs = dict(
             output_path=games_path,
             min_elo=min_elo,
             max_games=max_games,
+            pgn_path=pgn_path,
+            pgn_url=pgn_url,
+            lichess_month=lichess_month,
+            lichess_months=lichess_months,
         )
+        if lichess_base_url is not None:
+            load_kwargs["lichess_base_url"] = lichess_base_url
+        if auto_backfill:
+            load_kwargs["auto_backfill"] = auto_backfill
+            load_kwargs["max_backfill_months"] = max_backfill_months
+        load_and_filter_games(**load_kwargs)
     else:
         logger.info("Skipping download, using existing games file")
         if not games_path.exists():
@@ -307,7 +331,7 @@ def main():
     parser.add_argument(
         "--skip-download",
         action="store_true",
-        help="Skip downloading from HuggingFace (use existing file)",
+        help="Skip downloading from Lichess (use existing file)",
     )
     parser.add_argument(
         "--skip-annotation",
@@ -325,6 +349,47 @@ def main():
         type=int,
         default=500_000,
         help="Records per .bag shard for action_value",
+    )
+    parser.add_argument(
+        "--pgn-path",
+        type=str,
+        default=None,
+        help="Path to local PGN or PGN.BZ2 file",
+    )
+    parser.add_argument(
+        "--pgn-url",
+        type=str,
+        default=None,
+        help="Direct URL to a Lichess PGN.BZ2 file",
+    )
+    parser.add_argument(
+        "--lichess-month",
+        type=str,
+        default=None,
+        help="Month for Lichess dump (YYYY-MM, default: current UTC month)",
+    )
+    parser.add_argument(
+        "--lichess-months",
+        type=str,
+        default=None,
+        help="Comma-separated list of months (YYYY-MM) to fetch",
+    )
+    parser.add_argument(
+        "--lichess-base-url",
+        type=str,
+        default=None,
+        help="Base URL for Lichess antichess database",
+    )
+    parser.add_argument(
+        "--auto-backfill",
+        action="store_true",
+        help="Fetch previous months until max-games is reached",
+    )
+    parser.add_argument(
+        "--max-backfill-months",
+        type=int,
+        default=120,
+        help="Max months to scan when auto-backfill is enabled",
     )
 
     args = parser.parse_args()
@@ -346,6 +411,17 @@ def main():
         skip_annotation=args.skip_annotation,
         train_split=args.train_split,
         shard_size=args.shard_size,
+        pgn_path=args.pgn_path,
+        pgn_url=args.pgn_url,
+        lichess_month=args.lichess_month,
+        lichess_months=(
+            [m.strip() for m in args.lichess_months.split(",") if m.strip()]
+            if args.lichess_months
+            else None
+        ),
+        lichess_base_url=args.lichess_base_url,
+        auto_backfill=args.auto_backfill,
+        max_backfill_months=args.max_backfill_months,
     )
 
 

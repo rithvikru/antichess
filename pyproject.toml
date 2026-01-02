@@ -28,7 +28,6 @@ cuda = [
     "jax[cuda12]",
 ]
 antichess = [
-    "datasets",
     "polars",
     "tqdm",
     "pyarrow",
